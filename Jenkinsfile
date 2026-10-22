@@ -2,14 +2,12 @@
 pipeline {
     agent any
 
-    options {
-        timestamps()
-        disableConcurrentBuilds()
-    }
-
-    environment {
-        AWS_DEFAULT_REGION = 'ap-south-1'
-        TF_IN_AUTOMATION   = 'true'
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['apply', 'destroy'],
+            description: 'Choose apply to create EC2 or destroy to remove it'
+        )
     }
 
     stages {
@@ -24,7 +22,6 @@ pipeline {
                 sh '''
                     terraform -version
                     aws --version
-                    git --version
                 '''
             }
         }
@@ -42,59 +39,64 @@ pipeline {
         }
 
         stage('Terraform Plan') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
             steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-credentials'
-                ]]) {
-                    sh '''
-                        terraform plan \
-                          -input=false \
-                          -out=tfplan
-                    '''
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-credentials']
+                ]) {
+                    sh 'terraform plan -input=false -out=tfplan'
                 }
             }
         }
 
         stage('Approve EC2 Creation') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
             steps {
-                input message: 'Review the Terraform plan. Approve to create the EC2 instance?',
-                      ok: 'Approve and Create'
+                input message: 'Approve EC2 creation?', ok: 'Apply'
             }
         }
 
         stage('Terraform Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
             steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-credentials'
-                ]]) {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-credentials']
+                ]) {
                     sh 'terraform apply -input=false -auto-approve tfplan'
                 }
             }
         }
 
         stage('Show EC2 Details') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
             steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-credentials'
-                ]]) {
-                    sh '''
-                        terraform output instance_id
-                        terraform output public_ip
-                    '''
-                }
+                sh 'terraform output'
             }
         }
-    }
 
-    post {
-        success {
-            echo 'SUCCESS: Terraform EC2 deployment completed.'
-        }
-        failure {
-            echo 'FAILED: Check the Jenkins Console Output.'
+        stage('Terraform Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                input message: 'Confirm: destroy Terraform-managed resources?', ok: 'Destroy'
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-credentials']
+                ]) {
+                    sh 'terraform destroy -input=false -auto-approve'
+                }
+            }
         }
     }
 }
